@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: forrovagy-backend
+    env: node
+    plan: free
+    rootDir: .
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
