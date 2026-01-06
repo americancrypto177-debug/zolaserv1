@@ -63,6 +63,8 @@ const CREDIT_PACKS = [
 const CREDITS_FILE = 'credits.json';
 const CREDITS_LEDGER_FILE = 'credits_ledger.json';
 const STRIPE_APPLIED_FILE = 'stripe_applied.json';
+// Portal users store (must be defined before top-level admin seeding runs)
+const PORTAL_USERS_FILE = 'portal_users.json';
 async function getCredits(userId){
   const store = await readJson(CREDITS_FILE, {});
   return Number(store[userId] || 0);
@@ -500,7 +502,6 @@ function dayKey(ts){
 const presence = { users: new Map(), operators: new Map() };
 
 // ---- Portal auth (email verification) ----
-const PORTAL_USERS_FILE = 'portal_users.json';
 
 function normEmail(s){ return String(s||'').trim().toLowerCase(); }
 function token64(n=32){ return crypto.randomBytes(n).toString('base64url'); }
