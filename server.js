@@ -1126,6 +1126,8 @@ io.on('connection', (socket) => {
         const userId = lower(p?.userId || p?.email);
         if(!userId){ socket.emit('auth:denied', { reason:'missing_userId' }); return; }
         socket.data.userId = userId;
+        // Keep email for special rules (admin free messages, etc.)
+        socket.data.email = lower(p?.email || (String(userId).includes('@') ? userId : ''));
         socket.data.nick = safeStr(p?.nick || '');
         socket.data.city = safeStr(p?.city || '');
         socket.data.county = safeStr(p?.county || '');
@@ -1270,6 +1272,14 @@ socket.data.age = p?.age ?? '';
         age: p?.age ?? (p?.userMeta?.age ?? ''),
         profilePic: safeStr(p?.profilePic || p?.userMeta?.profilePic || '')
       };
+const profileMetaPatch = (p && p.profileMeta && typeof p.profileMeta === 'object') ? p.profileMeta : {
+  nick: profileNick,
+  city: safeStr(p?.profileCity || ''),
+  county: safeStr(p?.profileCounty || ''),
+  gender: safeStr(p?.profileGender || ''),
+  age: p?.profileAge ?? '',
+  avatar: safeStr(p?.profileAvatar || '')
+};
       touchUser(userId, userMetaPatch);
       await updateJson('threads.json', { threads: {}, assignments: {}, queue: [] }, (cur) => {
         cur.threads = cur.threads || {};
@@ -1277,19 +1287,28 @@ socket.data.age = p?.age ?? '';
         t.userId = userId;
         t.profileNick = profileNick;
         t.userMeta = Object.assign({}, t.userMeta || {}, userMetaPatch);
+        t.profileMeta = Object.assign({}, t.profileMeta || {}, profileMetaPatch || {});
         cur.threads[threadId] = t;
         return cur;
       });
 
       // Credits: 10 per message (image is also 10). Debit when the USER sends.
-      const cost = 10;
-      const rid = safeStr((p && (p.id || (p.meta && p.meta.id))) || '').trim() || (threadId + '|' + String(now()));
-      const debit = await debitCredits(userId, cost, rid);
-      if(!debit.ok){
-        socket.emit('credits:insufficient', { required: cost, credits: Number(debit.credits||0) });
-        return;
-      }
-      io.emit('credits:update', { userId, credits: Number(debit.credits||0) });
+// Admin user is exempt (0 credit per message) as requested.
+const isAdmin = (lower(socket.data?.email) === 'admin@forrovagy.hu') || (lower(userId) === 'admin@forrovagy.hu');
+const cost = isAdmin ? 0 : 10;
+
+if(cost > 0){
+  const rid = safeStr((p && (p.id || (p.meta && p.meta.id))) || '').trim() || (threadId + '|' + String(now()));
+  const debit = await debitCredits(userId, cost, rid);
+  if(!debit.ok){
+    socket.emit('credits:insufficient', { required: cost, credits: Number(debit.credits||0) });
+    return;
+  }
+  emitToUser(userId, 'credits:update', { credits: Number(debit.credits||0) });
+} else {
+  // keep UI in sync
+  emitToUser(userId, 'credits:update', { credits: await getCredits(userId) });
+}
 
       const op = await ensureAssignedServer(threadId);
       const msg = await persistMessage({
@@ -1319,14 +1338,17 @@ socket.data.age = p?.age ?? '';
       if(op){
         const t = await getThread(threadId);
         emitToOperator(op, 'chat:incoming', {
-          threadId,
-          userId,
-          profileNick,
-          text: msg.text,
-          img: msg.img,
-          meta: msg.meta,
-          userMeta: t?.userMeta || presence.users.get(userId) || {}
-        });
+  threadId,
+  userId,
+  profileNick,
+  text: msg.text,
+  img: msg.img,
+  meta: msg.meta,
+  // For operator UI (avatars + labels)
+  profilePic: t?.userMeta?.profilePic || '',
+  profileMeta: t?.profileMeta || {},
+  userMeta: t?.userMeta || presence.users.get(userId) || {}
+});
         await sendOperatorThreads(op);
       }
     }catch(e){}
