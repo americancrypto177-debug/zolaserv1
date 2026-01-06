@@ -843,6 +843,44 @@ app.get('/api/thread', async (req, res) => {
   res.json({ ok: true, thread: t });
 });
 
+// Active presence snapshot (users + operators)
+// Used by supervisor trigger list + admin/supervisor operator presence panels.
+app.get('/api/active-users', async (_req, res) => {
+  try{
+    const users = [];
+    const ops = [];
+    for(const [_id, u] of presence.users.entries()){
+      if(!u) continue;
+      users.push({
+        userId: u.userId || u.email || _id,
+        email: u.email || '',
+        nick: u.nick || '',
+        city: u.city || '',
+        county: u.county || '',
+        transport: u.transport || '',
+        age: u.age ?? '',
+        profilePic: u.profilePic || '',
+        lastSeen: u.lastSeen || 0,
+        online: !!(u.lastSeen && (now() - u.lastSeen < ONLINE_TTL_MS))
+      });
+    }
+    for(const [opId, o] of presence.operators.entries()){
+      if(!o) continue;
+      ops.push({
+        operatorId: o.operatorId || opId,
+        email: o.operatorId || opId,
+        lastSeen: o.lastSeen || 0,
+        online: !!(o.lastSeen && (now() - o.lastSeen < ONLINE_TTL_MS))
+      });
+    }
+    users.sort((a,b)=> (b.lastSeen||0) - (a.lastSeen||0));
+    ops.sort((a,b)=> (b.lastSeen||0) - (a.lastSeen||0));
+    res.json({ ok:true, users, operators: ops });
+  }catch(e){
+    res.json({ ok:false, err:'active_users_failed' });
+  }
+});
+
 app.get('/api/stats/operators', async (_req, res) => {
   const store = await loadThreads();
   const threads = store.threads || {};
@@ -1010,6 +1048,17 @@ function emitToOperator(operatorId, evt, payload){
     try{ s.emit(evt, payload); }catch(e){}
   }
 }
+
+function emitToOnlineOperators(evt, payload){
+  for(const [opId, set] of socketsByOperator.entries()){
+    if(!isOnlineOperator(opId)) continue;
+    for(const s of set){
+      try{ s.emit(evt, payload); }catch(e){}
+    }
+  }
+}
+
+
 function emitToUser(userId, evt, payload){
   const set = socketsByUser.get(userId);
   if(!set) return;
@@ -1335,21 +1384,31 @@ if(cost > 0){
         meta: msg.meta || null
       });
 
-      if(op){
-        const t = await getThread(threadId);
-        emitToOperator(op, 'chat:incoming', {
-  threadId,
-  userId,
-  profileNick,
-  text: msg.text,
-  img: msg.img,
-  meta: msg.meta,
-  // For operator UI (avatars + labels)
-  profilePic: t?.userMeta?.profilePic || '',
-  profileMeta: t?.profileMeta || {},
-  userMeta: t?.userMeta || presence.users.get(userId) || {}
-});
-        await sendOperatorThreads(op);
+      
+if(op){
+  const t = await getThread(threadId);
+  const payload = {
+    threadId,
+    userId,
+    profileNick,
+    text: msg.text,
+    img: msg.img,
+    meta: msg.meta,
+    // For operator UI (avatars + labels)
+    profilePic: t?.userMeta?.profilePic || '',
+    profileMeta: t?.profileMeta || {},
+    userMeta: t?.userMeta || presence.users.get(userId) || {}
+  };
+  emitToOperator(op, 'chat:incoming', payload);
+  // Also allow supervisor/admin to see incoming instantly in their UIs if they are connected
+  for(const s of socketsByStaff){
+    try{ s.emit('chat:incoming', Object.assign({ operatorId: op || '' }, payload)); }catch(e){}
+  }
+} else {
+  // No operator online right now; message is queued. Notify any online operators so they can refresh.
+  emitToOnlineOperators('operator:queueChanged', { threadId });
+}
+await sendOperatorThreads(op);
       }
     }catch(e){}
   });
